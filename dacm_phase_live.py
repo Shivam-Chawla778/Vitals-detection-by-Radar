@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import time
 from acconeer.exptool import a121
 from scipy.signal import butter, filtfilt, find_peaks
 from attr import evolve
@@ -12,23 +13,26 @@ def bandpass_filter(signal, low, high, fs, order=3):
 def main():
     # Connect to radar over UART (USB)
     client = a121.Client.open(serial_port="/dev/ttyUSB0")
-
+    distance=float(input("Enter the distance in meters: "))
     # Config params
-    frame_rate = 20  # Hz
+    frame_rate = 20
+    buffer= 0.5  # Hz
     duration = 30  # seconds
     num_frames = frame_rate * duration
-    sweeps_per_frame = 32
-    num_points = 100
+    sweeps_per_frame = 8
+    num_points = int((2*buffer)/0.0025)  
+    start_point = int((distance-buffer)/0.0025)  # Convert distance to start point index
 
     # Sensor config
     config = a121.SensorConfig(
         profile=a121.Profile.PROFILE_3,
         frame_rate=frame_rate,
-        start_point=50,
-        num_points=num_points,
+        start_point=start_point,
         step_length=1,
+        num_points=num_points,
         sweeps_per_frame=sweeps_per_frame,
     )
+
 
     # Setup and start
     client.setup_session(config)
@@ -39,16 +43,19 @@ def main():
     iq_avg_data = np.zeros((num_frames, num_points), dtype=complex)
     
     print("Collecting data...")
+    init_time = time.time()
     for i in range(num_frames):
         result = client.get_next()
         iq_data[i] = result.frame
         # Average across sweeps - simplified indexing
         iq_avg_data[i] = np.mean(iq_data[i], axis=0)
     
+    end_time = time.time()
     print("Done recording")
     client.stop_session()
     client.close()
-
+    time_taken = end_time - init_time
+    print(f"Data collection took {time_taken:.2f} seconds")
     # Find the chest bin using first few frames for stability
     initial_frames = min(50, num_frames)
     amplitude_avg = np.mean(np.abs(iq_avg_data[:initial_frames]), axis=0)
@@ -59,11 +66,11 @@ def main():
     i_data = np.real(iq_avg_data[:, chest_bin])
     q_data = np.imag(iq_avg_data[:, chest_bin])
     
-    # Calculate phase using DACM algorithm - FIXED VERSION
+    
     phase_series = np.zeros(num_frames)
     
     for j in range(1, num_frames):
-        # Proper DACM phase difference calculation
+        
         numerator = (i_data[j] * (q_data[j] - q_data[j-1]) - 
                     q_data[j] * (i_data[j] - i_data[j-1]))
         denominator = (i_data[j]**2 + q_data[j]**2 + 1e-12)
@@ -71,8 +78,8 @@ def main():
         phase_diff = numerator / denominator
         phase_series[j] = phase_series[j-1] + phase_diff
     
-    # FIXED: Use broader filter for higher BPM detection
-    # 0.2-.0 Hz covers 12-120 BPM range
+    
+    # 0.2-2.0 Hz covers 12-120 BPM range
     filtered_phase = bandpass_filter(phase_series, 0.2, 2.0, fs=frame_rate)
     
     # Additional detrending to remove low-frequency drift
@@ -83,13 +90,15 @@ def main():
     # Adjust prominence and distance based on expected breathing rate
     peaks, properties = find_peaks(filtered_phase, 
                                  prominence=np.std(filtered_phase)*0.3,
-                                 distance=frame_rate//4)  # Min 0.25s between peaks
+                                 distance=1)
+                                 #distance=frame_rate//4)  # Min 0.25s between peaks
     
     # Calculate BPM
     if len(peaks) > 1:
-        peak_intervals = np.diff(peaks) / frame_rate  # intervals in seconds
-        avg_interval = np.mean(peak_intervals)
-        bpm = 60 / avg_interval
+        #peak_intervals = np.diff(peaks) / frame_rate  # intervals in seconds
+        #avg_interval = np.mean(peak_intervals)
+        #bpm = 60 / avg_interval
+        bpm = len(peaks) * (60 / time_taken)  # peaks per minute
         print(f"Detected BPM: {bpm:.1f}")
         print(f"Number of peaks found: {len(peaks)}")
     else:
@@ -115,17 +124,18 @@ def main():
     plt.ylabel('Phase (radians)')
     plt.grid(True)
     plt.show()
-    ## Plot 3: Amplitude at chest bin
-    #plt.subplot(3, 1, 3)
-    #amplitude_series = np.abs(iq_avg_data[:, chest_bin])
-    #plt.plot(time_axis, amplitude_series)
-    #plt.title(f'Amplitude at Chest Bin {chest_bin}')
-    #plt.xlabel('Time (s)')
-    #plt.ylabel('Amplitude')
-    #plt.grid(True)
-    #
-    #plt.tight_layout()
-    #plt.show()
+    # Plot 3: Amplitude at chest bin
+    plt.subplot(3, 1, 3)
+    amplitude_series = np.abs(iq_avg_data[:, chest_bin])
+    plt.plot(time_axis, amplitude_series)
+    plt.title(f'Amplitude at Chest Bin {chest_bin}')
+    plt.xlabel('Time (s)')
+    plt.ylabel('Amplitude')
+    plt.grid(True)
+    
+    plt.tight_layout()
+    plt.show()
 
 if __name__ == "__main__":
     main()
+    
