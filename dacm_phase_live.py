@@ -1,4 +1,4 @@
-import numpy as np
+import numpy as np               
 import matplotlib.pyplot as plt
 import time
 from acconeer.exptool import a121
@@ -16,13 +16,13 @@ def main():
     distance=float(input("Enter the distance in meters: "))
     # Config params
     frame_rate = 20
-    buffer= 0.5  # Hz
-    duration = 30  # seconds
+    buffer= 0.5  
+    duration = 10  # seconds
     num_frames = frame_rate * duration
     sweeps_per_frame = 8
     num_points = int((2*buffer)/0.0025)  
-    start_point = int((distance-buffer)/0.0025)  # Convert distance to start point index
-
+    start_point = max((int((distance-buffer))/0.0025),1)  # Convert distance to start point index
+    
     # Sensor config
     config = a121.SensorConfig(
         profile=a121.Profile.PROFILE_3,
@@ -47,14 +47,18 @@ def main():
     for i in range(num_frames):
         result = client.get_next()
         iq_data[i] = result.frame
-        # Average across sweeps - simplified indexing
-        iq_avg_data[i] = np.mean(iq_data[i], axis=0)
     
     end_time = time.time()
+    time_taken = end_time - init_time
     print("Done recording")
     client.stop_session()
     client.close()
-    time_taken = end_time - init_time
+    
+    actual_frame_rate = num_frames / time_taken
+    for i in range(num_frames):
+      # Average across sweeps - simplified indexing
+       iq_avg_data[i] = np.mean(iq_data[i], axis=0)
+    
     print(f"Data collection took {time_taken:.2f} seconds")
     # Find the chest bin using first few frames for stability
     initial_frames = min(50, num_frames)
@@ -71,16 +75,16 @@ def main():
     
     for j in range(1, num_frames):
         
-        numerator = (i_data[j] * (q_data[j] - q_data[j-1]) - 
-                    q_data[j] * (i_data[j] - i_data[j-1]))
+        numerator = ( ( (i_data[j]) * (q_data[j] - q_data[j-1]) ) - 
+                    ((q_data[j]) * (i_data[j] - i_data[j-1]) ) )
         denominator = (i_data[j]**2 + q_data[j]**2 + 1e-12)
         
         phase_diff = numerator / denominator
         phase_series[j] = phase_series[j-1] + phase_diff
     
-    
-    # 0.2-2.0 Hz covers 12-120 BPM range
-    filtered_phase = bandpass_filter(phase_series, 0.2, 2.0, fs=frame_rate)
+
+    # 0.1-0.5 Hz covers 6-30 BPM range
+    filtered_phase = bandpass_filter(phase_series, 0.1, 0.5, fs=actual_frame_rate)
     
     # Additional detrending to remove low-frequency drift
     from scipy.signal import detrend
@@ -90,7 +94,7 @@ def main():
     # Adjust prominence and distance based on expected breathing rate
     peaks, properties = find_peaks(filtered_phase, 
                                  prominence=np.std(filtered_phase)*0.3,
-                                 distance=1)
+                                 distance=30)
                                  #distance=frame_rate//4)  # Min 0.25s between peaks
     
     # Calculate BPM
@@ -105,7 +109,7 @@ def main():
         print("Insufficient peaks detected")
     
     # Plot results
-    time_axis = np.linspace(0, duration, num_frames)
+    time_axis = np.linspace(0, time_taken, num_frames)
     
     plt.figure(figsize=(12, 8))
     
@@ -138,4 +142,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
